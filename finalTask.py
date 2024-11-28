@@ -1,5 +1,10 @@
 import requests
 import spacy
+from llama_cpp import Llama
+
+# Path to language model file
+model_path =  "models/llama-2-13b.Q4_K_M.gguf"
+model_pathw = "/Users/project/WebdataProvessing/models/llama-2-13b.Q4_K_M.gguf"
 
 nlp = spacy.load("en_core_web_sm")
 
@@ -11,6 +16,23 @@ question_to_property_map = {
     "leader": "P6",
     "country": "P17",
 }
+
+def QueryModel(question):
+    # Display query
+    print(f"Asking the question: \"{question}\" to the model. Please wait...")
+    llm = Llama(model_path=model_path, verbose=False)
+    # Query the model
+    output = llm(
+        question,              # The input prompt/question
+        max_tokens=32,         # Limit the response to 32 tokens
+        stop=["Q:", "\n"],     # Stop generation if a new question or line starts
+        echo=False             # Include the prompt in the output
+    )
+    # Display the raw output (B)
+    raw_text = output['choices'][0]['text'] if 'choices' in output and output['choices'] else ""
+    print("Here is the output:")
+    print(raw_text)
+    return raw_text
 
 def extract_claim(question):
     doc = nlp(question)
@@ -24,6 +46,20 @@ def extract_claim(question):
     if entities:
         subject = entities[0]
     return subject, predicate, obj
+
+def extract_entities_with_urls(text):
+    doc = nlp(text)
+    entities = [ent.text for ent in doc.ents]
+    output_lines = []
+
+    for entity in entities:
+        # Format the Wikipedia URL (replace spaces with underscores for valid URLs)
+        wikipedia_url = f"https://en.wikipedia.org/wiki/{entity.replace(' ', '_')}"
+        output_lines.append(f"{entity}\t{wikipedia_url}")
+    
+    if(entities):
+        print("Entities extracted:\n" + "\n".join(output_lines))
+    return "\n".join(output_lines)
 
 def convert_answer_to_type(answer):
     if answer.lower() in ["yes", "no"]:
@@ -39,9 +75,9 @@ def query_wikidata_entity(entity_name):
     if response.status_code == 200:
         data = response.json()
         if 'search' in data and len(data['search']) > 0:
-            return data['search'][0]['id']
+            entity_id = data['search'][0]['id']
+            return entity_id
     return None
-
 def query_wikidata_relationship(subject, predicate):
     subject_id = query_wikidata_entity(subject)
     if not subject_id:
@@ -77,14 +113,17 @@ def verify_answer(subject, predicate, answer):
         return answer in valid_objects
 
 def process_question_and_answer(question, answer):
+    extract_entities_with_urls(question)
+    extract_entities_with_urls(answer)
     subject, predicate, obj = extract_claim(question)
     if not subject or not predicate:
         return "Could not parse the question properly."
     processed_answer = convert_answer_to_type(answer)
     if not processed_answer:
         return "Could not process the answer."
+    print(f"Processed answer: {processed_answer}")  # Print processed answer
     if (processed_answer == 'yes' or processed_answer == 'no'):
-        return check_statement(question)
+        return check_statement(question, processed_answer)
     return verify_answer(subject, predicate, processed_answer)
 
 def normalize_answer(answer):
@@ -145,7 +184,8 @@ def query_wikidata_question(subject, predicate):
     objects = [binding['objectLabel']['value'] for binding in sparql_data['results']['bindings']]
     return objects
 
-def check_statement(statement):
+
+def check_statement(statement, processed_answer):
     subject, predicate, obj = extract_claim(statement)
 
     if not subject or not predicate or not obj:
@@ -157,8 +197,15 @@ def check_statement(statement):
     if valid_objects is None:
         return f"Could not verify the statement: {statement}"
 
-    # Check if the object matches one of the valid objects from Wikidata
-    return obj in valid_objects
+    # Determine the truth value
+    is_true = obj in valid_objects
+    expected_truth = processed_answer.lower() == "yes"
+
+    if is_true == expected_truth:
+        return f"The statement matches the processed answer: {processed_answer}"
+    else:
+        return f"The statement does not match the processed answer: {processed_answer}"
+
 
 questions_and_answers = [
     ("What is the capital of France?", "It is called Paris"),
@@ -166,14 +213,21 @@ questions_and_answers = [
     ("Does France have a capital?", "Sure it does"),
     ("Does France have a capital?", "I don't think it does, Nope"),
     ("The capital of France called Paris", "yes it is"),
-    ("The capital of France called Paris", "not it isn't"),
+    ("The capital of France called Paris", "no it isn't"),
     ("The capital of France called Berlin", "yes it is"),
     ("The capital of France called Berlin", "no it isn't"),
-    ("The capital of France called Berlin or Paris", "it is"),
+    ("The capital of France is called Berlin or Paris", "it is Paris"),
+    ("The capital of France is called Berlin or Paris", "it is Berlin"),
     ("Who is the leader of Germany?", "It is Olaf Scholz"),
     ("Who is the leader of Germany?", "It is Fritz Fritzgerald"),
 ]
 
+
+##result = process_question_and_answer("What is the capital of France?" ,QueryModel("What is the capital of France?"))
+#print(f"Question: What is the capital of France? -> Paris -> Result: {result}")
+print("*--------------*-------------*--------------*")
+
 for question, answer in questions_and_answers:
     result = process_question_and_answer(question, answer)
     print(f"Question: {question} -> Answer: {answer} -> Result: {result}")
+    print("*--------------*-------------*--------------*")
